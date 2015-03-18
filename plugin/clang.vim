@@ -150,6 +150,26 @@ func! s:PLog(head, info)
   echom printf("Clang: log: %s >>> %s", string(a:head), string(a:info))
 endf
 "}}}
+" {{{ s:BufVarSet
+" Store current global var into b:clang_bufvars_storage
+" Set global options that different in different buffer
+func! s:BufVarSet()
+  let b:clang_bufvars_storage= {
+      \ 'completeopt':  &completeopt,
+  \ }
+  if &filetype == 'c' && !empty(g:clang_c_completeopt)
+    exe 'set completeopt='.g:clang_c_completeopt
+  elseif &filetype == 'cpp' && !empty(g:clang_cpp_completeopt)
+    exe 'set completeopt='.g:clang_cpp_completeopt
+  endif
+endf
+"}}}
+" {{{ s:BufVarRestore
+" Restore global vim options
+func! s:BufVarRestore()
+  exe 'set completeopt='.b:clang_bufvars_storage['completeopt']
+endf
+" }}}
 " {{{ s:Complete[Dot|Arrow|Colon]
 " Tigger a:cmd when cursor is after . -> and ::
 
@@ -261,37 +281,6 @@ func! s:DiscoverIncludeDirs(clang, options)
   return l:res
 endf
 "}}}
-""{{{ s:DiagnosticsWindowClose
-" Close diagnostics and preview window
-" @pclose Call pclose if not 0
-" @driver Test driver if not 0, and close the window if the driver window is
-"         not exist.
-"
-" Tab variable
-"   t:clang_diags_bufnr
-"   t:clang_diags_driver_bufnr
-func! s:DiagnosticsWindowClose(pclose, driver)
-  if ! s:IsValidFile()
-    return
-  endif
-
- " close preview window
-  if a:pclose && s:HasPreviewAbove()
-    pclose
-  endif
-  if exists('t:clang_diags_bufnr')
-    let l:cwn = bufwinnr(bufnr('%'))
-    let l:dwn = bufwinnr(t:clang_diags_bufnr)
-    if l:dwn != -1 && (!a:driver || (a:driver && bufwinnr(t:clang_diags_driver_bufnr) == -1))
-      exe l:dwn . 'wincmd w'
-      call s:PDebug("s:DiagnosticsWindowClose", l:dwn)
-      hide
-      exe l:cwn . 'wincmd w'
-    endif
-  endif
-  return -1
-endf
-"}}}
 "{{{ s:DiagnosticsWindowOpen
 " Split a window to show clang diagnostics. If there's no diagnostics, close
 " the split window.
@@ -300,7 +289,7 @@ endf
 "   g:clang_statusline
 " Tab variable
 "   t:clang_diags_bufnr         <= diagnostics window bufnr
-"   t:clang_diags_driver_bufnr  <= the driver buffer numer
+"   t:clang_diags_driver_bufnr  <= the driver buffer number, who opens this window
 "   NOTE: Don't use winnr, winnr maybe changed.
 " @diags A list of lines from clang diagnostics, or a diagnostics file name.
 " @return -1 or buffer number t:clang_diags_bufnr
@@ -336,7 +325,8 @@ func! s:DiagnosticsWindowOpen(diags)
     endif
   elseif empty(l:diags)
     " just close window(but not preview window) and return
-    return s:DiagnosticsWindowClose(0, 0)
+    call s:DiagnosticsWindowClose(0)
+    return -1
   else
     " goto the exist window
     call s:PDebug("s:DiagnosticsWindowOpen::wincmd", l:winnr)
@@ -397,6 +387,60 @@ func! s:DiagnosticsWindowOpen(diags)
   return t:clang_diags_bufnr
 endf
 "}}}
+""{{{ s:DiagnosticsWindowClose
+" Close diagnostics window or quit the editor
+" @when_bufwinleave set to 1 if is called by BufWinLeave event
+" Tab variable
+"   t:clang_diags_bufnr
+"   t:clang_diags_driver_bufnr
+func! s:DiagnosticsWindowClose(when_bufwinleave)
+  " diag window buffer is not exist
+  if !exists('t:clang_diags_bufnr')
+    return
+  endif
+
+  call s:PDebug("s:DiagnosticsWindowClose", "try")
+
+  let l:cbn = bufnr('%')
+  " is invalid file and not in diag window
+  if ! s:IsValidFile() && l:cbn != t:clang_diags_bufnr
+    return
+  endif
+
+  " is not leave from the driver buffer window
+  if a:when_bufwinleave && (!exists('t:clang_diags_driver_bufnr') || l:cbn != t:clang_diags_driver_bufnr)
+    return
+  end
+
+  let l:cwn = bufwinnr(l:cbn)
+  let l:dwn = bufwinnr(t:clang_diags_bufnr)
+
+  " the window is not exist
+  if l:dwn == -1
+    return
+  endif
+
+  exe l:dwn . 'wincmd w'
+  if a:when_bufwinleave && winbufnr(3) == -1
+    " quit editor when called before leave the driver window
+    qa!
+  else
+    " just hide the diag window
+    hide
+  endif
+  exe l:cwn . 'wincmd w'
+
+  call s:PDebug("s:DiagnosticsWindowClose", l:dwn)
+endf
+"}}}
+"{{{ s:DiagnosticsPreviewWindowClose
+" @when_bufwinleave set to 1 if is called by BufWinLeave event
+func! s:DiagnosticsPreviewWindowClose(when_bufwinleave)
+  call s:PDebug("s:DiagnosticsPreviewWindowClose", "")
+  pclose
+  call s:DiagnosticsWindowClose(a:when_bufwinleave)
+endf
+"}}}
 "{{{  s:GenPCH
 " Generate clang precompiled header.
 " A new file with postfix '.pch' will be created if success.
@@ -439,7 +483,7 @@ func! s:GenPCH(clang, header)
     " may want to discover pch
     call s:ClangCompleteInit(1)
     " close the error window
-    call s:DiagnosticsWindowClose(0, 0)
+    call s:DiagnosticsWindowClose(0)
     call s:PLog("s:GenPCH", 'Clang creates PCH flie ' . l:header . '.pch successfully!')
   endif
   return l:clang_output
@@ -746,8 +790,8 @@ func! s:ClangCompleteInit(force)
   " Create GenPCH command
   com! -nargs=* ClangGenPCHFromFile call <SID>GenPCH(g:clang_exec, <f-args>)
   
-  " Create close diag window command
-  com! ClangClosePreviewDiagWindow  call <SID>DiagnosticsWindowClose(1,0)
+  " Create close diag and preview window command
+  com! ClangCloseWindow  call <SID>DiagnosticsPreviewWindowClose(0)
 
   " Useful to re-initialize plugin if .clang is changed
   com! ClangCompleteInit            call <SID>ClangCompleteInit(1)
@@ -787,11 +831,9 @@ func! s:ClangCompleteInit(force)
           \ endif
   endif
 
-  " Close diagnostics window when enter new buffer window, and must test
-  " the driver state, user may not hope close the window if the driver is
-  " still available.
-  "  FIXME buffer unload or leave events may cause vim SEGV...
-  au BufWinEnter <buffer> call <SID>DiagnosticsWindowClose(1,1)
+  au BufWinLeave <buffer> call <SID>DiagnosticsPreviewWindowClose(1)
+  au BufEnter <buffer> call <SID>BufVarSet()
+  au BufLeave <buffer> call <SID>BufVarRestore()
 
   call s:GlobalVarRestore(l:gvars)
 endf
@@ -903,10 +945,6 @@ func! s:ClangComplete(findstart, base)
 
   if a:findstart
     call s:PDebug("ClangComplete", "phase 1")
-    " close preview window not owned by this view before completion
-    if ! s:HasPreviewAbove()
-      pclose
-    endif
     if !exists('b:clang_state')
       let b:clang_state = { 'state': 'ready', 'stdout': [], 'stderr': [] }
     endif
@@ -965,7 +1003,7 @@ func! s:ClangComplete(findstart, base)
     " update completions by new l:base
     let b:clang_cache['completions'] = s:ParseCompletionResult(b:clang_state['stdout'], l:base)
     " close preview window if empty
-    if empty(b:clang_cache['completions']) && s:HasPreviewAbove()
+    if empty(b:clang_cache['completions'])
       pclose
     endif
     " call to show diagnostics
@@ -986,4 +1024,3 @@ endf
 "}}}
 
 " vim: set shiftwidth=2 softtabstop=2 tabstop=2:
-
