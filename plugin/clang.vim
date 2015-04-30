@@ -116,8 +116,10 @@ endif
 au FileType c,cpp call <SID>ClangCompleteInit(0)
 "}}}
 "{{{ s:IsValidFile
+" A new file is also a valid file
 func! s:IsValidFile()
-  return ( &filetype == "c" || &filetype == "cpp" ) && filereadable(expand("%"))
+  let l:cur = expand("%")
+  return ( &filetype == "c" || &filetype == "cpp" ) && ( filereadable(l:cur) || empty(glob(l:cur)) )
 endf
 "}}}
 "{{{ s:PDebug
@@ -291,9 +293,10 @@ endf
 "   t:clang_diags_bufnr         <= diagnostics window bufnr
 "   t:clang_diags_driver_bufnr  <= the driver buffer number, who opens this window
 "   NOTE: Don't use winnr, winnr maybe changed.
+" @src Relative path to current source file, to replace <stdin>
 " @diags A list of lines from clang diagnostics, or a diagnostics file name.
 " @return -1 or buffer number t:clang_diags_bufnr
-func! s:DiagnosticsWindowOpen(diags)
+func! s:DiagnosticsWindowOpen(src, diags)
   let l:diags = a:diags
   if type(l:diags) == type('')
     " diagnostics file name
@@ -349,7 +352,7 @@ func! s:DiagnosticsWindowOpen(diags)
 
   " add diagnostics
   for l:line in l:diags
-    call append(line('$')-1, l:line)
+    call append(line('$')-1, substitute(l:line, '^<stdin>:', a:src . ':', ''))
   endfor
   " the last empty line
   $delete _
@@ -423,7 +426,7 @@ func! s:DiagnosticsWindowClose(when_bufwinleave)
   exe l:dwn . 'wincmd w'
   if a:when_bufwinleave && winbufnr(3) == -1
     " quit editor when called before leave the driver window
-    qa!
+    qall!
   else
     " just hide the diag window
     hide
@@ -477,7 +480,7 @@ func! s:GenPCH(clang, header)
 
   if v:shell_error
     " uses internal diag window to show errors
-    call s:DiagnosticsWindowOpen(split(l:clang_output, '\n'))
+    call s:DiagnosticsWindowOpen(expand('%:p:.'), split(l:clang_output, '\n'))
     call s:PDebug("s:GenPCH", {'exit': v:shell_error, 'cmd': l:command, 'out': l:clang_output }, 3)
   else
     " may want to discover pch
@@ -495,15 +498,9 @@ endf
 func! s:GlobalVarSet()
   let l:values = {
       \ 'shell':        &shell,
-      \ 'completeopt':  &completeopt,
   \ }
   if !empty(g:clang_sh_exec)
     exe 'set shell='.g:clang_sh_exec
-  endif
-  if &filetype == 'c' && !empty(g:clang_c_completeopt)
-    exe 'set completeopt='.g:clang_c_completeopt
-  elseif &filetype == 'cpp' && !empty(g:clang_cpp_completeopt)
-    exe 'set completeopt='.g:clang_cpp_completeopt
   endif
   return l:values
 endf
@@ -516,7 +513,6 @@ func! s:GlobalVarRestore(values)
     return
   endif
   exe 'set shell='.a:values['shell']
-  exe 'set completeopt='.a:values['completeopt']
 endf
 " }}}
 " {{{ s:HasPreviewAbove
@@ -761,6 +757,9 @@ func! s:ClangCompleteInit(force)
     endif
   endif
   
+  " add current dir to include path
+  let b:clang_options .= ' -I ' . expand("%:p:h")
+
   " add include directories if is enabled and not ow
   if g:clang_include_sysheaders && ! l:is_ow
     let l:incs = s:DiscoverIncludeDirs(g:clang_exec, b:clang_options)
@@ -831,11 +830,21 @@ func! s:ClangCompleteInit(force)
           \ endif
   endif
 
-  au BufWinLeave <buffer> call <SID>DiagnosticsPreviewWindowClose(1)
+  "FIXME buggy when use :e, see #41
+  "au BufWinLeave <buffer> call <SID>DiagnosticsPreviewWindowClose(1)
+
   au BufEnter <buffer> call <SID>BufVarSet()
   au BufLeave <buffer> call <SID>BufVarRestore()
 
   call s:GlobalVarRestore(l:gvars)
+endf
+"}}}
+"{{{ ClangExecuteNeoJobHandler
+"handles event: exit
+func! ClangExecuteNeoJobHandler(job_id, data, event)
+  if a:event == 'exit'
+    call ClangExecuteDone(self.fstdout, self.fstderr)
+  endif
 endf
 "}}}
 "{{{ s:ClangExecute
@@ -858,16 +867,20 @@ endf
 func! s:ClangExecute(root, clang_options, line, col)
   let l:cwd = fnameescape(getcwd())
   exe 'lcd ' . a:root
-  let l:src = shellescape(expand('%:p:.'))
-  let l:command = printf('%s -fsyntax-only -Xclang -code-completion-macros -Xclang -code-completion-at=%s:%d:%d %s %s',
-                      \ g:clang_exec, l:src, a:line, a:col, a:clang_options, l:src)
+  let l:src = join(getline(1, '$'), "\n") . "\n"
+  let l:command = printf('%s -fsyntax-only -Xclang -code-completion-macros -Xclang -code-completion-at=-:%d:%d %s -',
+                      \ g:clang_exec, a:line, a:col, a:clang_options)
   let l:tmps = [tempname(), tempname()]
   let l:command .= ' 1>'.l:tmps[0].' 2>'.l:tmps[1]
   let l:res = [[], []]
-  if !exists('v:servername') || empty(v:servername)
+  if has("nvim")
+    let l:argv = ['sh', '-c', l:command]
+    call s:PDebug("s:ClangExecute::job.argv", l:argv, 2)
+    call jobstart(l:argv, {'fstdout': l:tmps[0], 'fstderr': l:tmps[1], 'on_exit': function('ClangExecuteNeoJobHandler')})
+  elseif !exists('v:servername') || empty(v:servername)
     let b:clang_state['state'] = 'ready'
     call s:PDebug("s:ClangExecute::cmd", l:command, 2)
-    call system(l:command)
+    call system(l:command, l:src)
     let l:res = s:DeleteAfterReadTmps(l:tmps)
     call s:PDebug("s:ClangExecute::stdout", l:res[0], 3)
     call s:PDebug("s:ClangExecute::stderr", l:res[1], 2)
@@ -880,7 +893,7 @@ func! s:ClangExecute(root, clang_options, line, col)
                       \ g:clang_vim_exec, shellescape(v:servername), shellescape(l:keys))
     let l:command = '('.l:command.';'.l:vcmd.') &'
     call s:PDebug("s:ClangExecute::cmd", l:command, 2)
-    call system(l:command)
+    call system(l:command, l:src)
   endif
   exe 'lcd ' . l:cwd
   let b:clang_state['stdout'] = l:res[0]
@@ -984,8 +997,6 @@ func! s:ClangComplete(findstart, base)
       " update state machine
       if b:clang_state['state'] == 'ready'
         let b:clang_state['state'] = 'busy'
-        " buggy when update in the second phase ?
-        silent update!
         call s:ClangExecute(b:clang_root, b:clang_options, l:line, l:col)
       elseif b:clang_state['state'] == 'sync'
         let b:clang_state['state'] = 'ready'
@@ -1007,7 +1018,7 @@ func! s:ClangComplete(findstart, base)
       pclose
     endif
     " call to show diagnostics
-    call s:DiagnosticsWindowOpen(b:clang_cache['diagnostics'])
+    call s:DiagnosticsWindowOpen(expand('%:p:.'), b:clang_cache['diagnostics'])
     return l:start
   else
     call s:PDebug("ClangComplete", "phase 2")
