@@ -12,6 +12,7 @@ Use of clang to parse and complete C/C++ source files.
 
 Installation
 -------------
+* Require executable `clang` installed.
 * Put the file `plugin/clang.vim` into `~/.vim/plugin` is OK.
 * [pathogen.vim][4] `cd ~/.vim/bundle; git clone https://github.com/justmao945/vim-clang.git` is recommended.
 
@@ -84,6 +85,31 @@ find that's too 'slow' to wait the completion...
   [syswow][6].
 
 
+
+Include file path completion ?
+--------------------
+Please use with [neocomplete][7], they can work well together.
+```viml
+" disable auto completion for vim-clang
+let g:clang_auto = 0
+" default 'longest' can not work with neocomplete
+let g:clang_c_completeopt = 'menuone,preview'
+let g:clang_cpp_completeopt = 'menuone,preview'
+
+" use neocomplete
+" input patterns
+if !exists('g:neocomplete#force_omni_input_patterns')
+  let g:neocomplete#force_omni_input_patterns = {}
+endif
+
+" for c and c++
+let g:neocomplete#force_omni_input_patterns.c =
+      \ '[^.[:digit:] *\t]\%(\.\|->\)\w*'
+let g:neocomplete#force_omni_input_patterns.cpp =
+      \ '[^.[:digit:] *\t]\%(\.\|->\)\w*\|\h\w*::\w*'
+```
+
+
 Options and Commands
 --------------------
 `:h clang.txt`
@@ -99,3 +125,4 @@ Now only tested on Linux (Ubuntu/Debian) and Mac OSX
 [4]: https://github.com/tpope/vim-pathogen
 [5]: https://github.com/Valloric/YouCompleteMe
 [6]: https://github.com/syswow
+[7]: https://github.com/Shougo/neocomplete

@@ -1,12 +1,8 @@
 This is a mirror of http://www.vim.org/scripts/script.php?script_id=4926
 
-Description
----------------
-Use of clang to parse and complete C/C++ source files.
-
-
 Installation
 -------------
+* Require executable `clang` installed.
 * Put the file `plugin/clang.vim` into `~/.vim/plugin` is OK.
 * [pathogen.vim][4] `cd ~/.vim/bundle; git clone https://github.com/justmao945/vim-clang.git` is recommended.
 
@@ -54,6 +50,11 @@ If you use clang_complete with libclang and open many C/C++ source files, you'll
 
 5. Better PCH support. vim-clang will find stdafx.h.pch automatically.
 
+vim-clang VS [Valloric/YouCompleteMe][5]
+--------------------
+[YouCompleteMe][5] is more powerful than vim-clang, that has a well designed client-server
+architecture to deal the memory problem in clang_complete.
+
 
 Asynchronized mode [new]
 --------------------
@@ -70,6 +71,34 @@ find that's too 'slow' to wait the completion...
   can start Gvim to work as a server or you must add '--servername XXX' to force to start
   a vim server. More to see ':h clientserver'.
 
+* Job control is used to run clang when in neovim, which is really very nice! Thank you 
+  [syswow][6].
+
+
+
+Include file path completion ?
+--------------------
+Please use with [neocomplete][7], they can work well together.
+```viml
+" disable auto completion for vim-clang
+let g:clang_auto = 0
+" default 'longest' can not work with neocomplete
+let g:clang_c_completeopt = 'menuone,preview'
+let g:clang_cpp_completeopt = 'menuone,preview'
+
+" use neocomplete
+" input patterns
+if !exists('g:neocomplete#force_omni_input_patterns')
+  let g:neocomplete#force_omni_input_patterns = {}
+endif
+
+" for c and c++
+let g:neocomplete#force_omni_input_patterns.c =
+      \ '[^.[:digit:] *\t]\%(\.\|->\)\w*'
+let g:neocomplete#force_omni_input_patterns.cpp =
+      \ '[^.[:digit:] *\t]\%(\.\|->\)\w*\|\h\w*::\w*'
+```
+
 
 Options and Commands
 --------------------
@@ -84,4 +113,6 @@ Now only tested on Linux (Ubuntu/Debian) and Mac OSX
 [2]: http://www.ishani.org
 [3]: http://www.ishani.org/web/articles/code/clang-win32/
 [4]: https://github.com/tpope/vim-pathogen
-
+[5]: https://github.com/Valloric/YouCompleteMe
+[6]: https://github.com/syswow
+[7]: https://github.com/Shougo/neocomplete

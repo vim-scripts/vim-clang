@@ -1,51 +1,8 @@
-"{{{ Description
-" Script Name: clang.vim
-" Version:     1.0.0-beta (2013-xx-xx)
-" Authors:     2013~     Jianjun Mao <justmao945@gmail.com>
-"
-" Description: Use of clang to parse in C/C++ source files.
-" Notes:
-"   1. Make sure `clang` is available in path when g:clang_exec is empty
-"
-"   2. Make sure `vim` is available in path if uses asynchronized mode(default)
-"     if g:clang_vim_exec is empty.
-"
-" TODO:
-"   1. Private members filter
-"   2. Remove OmniComplete .... Pattern Not Found error?...
-"      * This has been fixed in asynchronized mode, because I can control the
-"        completion action.
-"   3. Test cases....
-"      * Really hard to do this automatically, just test manually.
-"
-" Issues:
-"   1. When complete an identifier only has a char, the char will be deleted by
-"      OmniCompletion with 'longest' completeopt.
-"      Vim verison: 7.3.754
-"   
-" References:
-"   [1] http://clang.llvm.org/docs/
-"   [2] VIM help file
-"   [3] VIM scripts [vim-buffergator, clang_complete, AsyncCommand,
-"                    vim-marching]
-"}}}
 "{{{ Global initialization
 if exists('g:clang_loaded')
   finish
 endif
 let g:clang_loaded = 1
-
-if !exists('g:clang_load_if_clang_dotfile')
-  let g:clang_load_if_clang_dotfile = 0
-endif
-
-if !exists('g:clang_dotfile')
-  let g:clang_dotfile = '.clang'
-endif
-
-if !exists('g:clang_dotfile_overwrite')
-  let g:clang_dotfile_overwrite = '.clang.ow'
-endif
 
 if !exists('g:clang_auto')
   let g:clang_auto = 1
@@ -75,12 +32,36 @@ if !exists('g:clang_diagsopt') || g:clang_diagsopt !~# '^[a-z]\+\(:[0-9]\)\?$'
   let g:clang_diagsopt = 'rightbelow:6'
 endif
 
+if !exists('g:clang_dotfile')
+  let g:clang_dotfile = '.clang'
+endif
+
+if !exists('g:clang_dotfile_overwrite')
+  let g:clang_dotfile_overwrite = '.clang.ow'
+endif
+
 if !exists('g:clang_exec')
   let g:clang_exec = 'clang'
 endif
 
+if !exists('g:clang_format_auto')
+  let g:clang_format_auto = 0
+endif
+
+if !exists('g:clang_format_exec')
+  let g:clang_format_exec = 'clang-format'
+endif
+
+if !exists('g:clang_format_style')
+  let g:clang_format_style = 'LLVM'
+end
+
 if !exists('g:clang_include_sysheaders')
   let g:clang_include_sysheaders = 1
+endif
+
+if !exists('g:clang_load_if_clang_dotfile')
+  let g:clang_load_if_clang_dotfile = 0
 endif
 
 if !exists('g:clang_pwheight')
@@ -100,16 +81,16 @@ if !exists('g:clang_stdafx_h')
   let g:clang_stdafx_h = 'stdafx.h'
 endif
 
+if !exists('g:clang_use_path')
+  let g:clang_use_path = 1
+endif
+
 if !exists('g:clang_vim_exec')
   if has('mac')
     let g:clang_vim_exec = 'mvim'
   else
     let g:clang_vim_exec = 'vim'
   endif
-endif
-
-if !exists('g:clang_use_path')
-  let g:clang_use_path = 1
 endif
 
 " Init on c/c++ files
@@ -123,15 +104,27 @@ func! s:IsValidFile()
 endf
 "}}}
 "{{{ s:PDebug
-" Uses 'echom' to preserve @info when g:clang_debug is not 0.
-" Call ':messages' to see debug info
+" Use `:messages` to see debug info or read the var `b:clang_pdebug_storage`
+" TODO: pretty print of info and write b:clang_pdebug_storage to new buffer,
+" file, or someother places...
+" 
+" Buffer var used to store messages
+"   b:clang_pdebug_storage
+"
 " @head Prefix of debug info
 " @info Can be a string list, string, or dict
 " @lv   Debug level, write info only when lv < g:clang_debug, deault is 1
 func! s:PDebug(head, info, ...)
   let l:lv = a:0 > 0 && a:1 > 1 ? a:1 : 1
+
+  if !exists('b:clang_pdebug_storage')
+    let b:clang_pdebug_storage = []
+  endif
+
   if l:lv <= g:clang_debug
-    echom printf("Clang: debug: %s >>> %s", string(a:head), string(a:info))
+    let l:msg = printf("Clang: debug: %s >>> %s", string(a:head), string(a:info))
+    echom l:msg
+    call add(b:clang_pdebug_storage, l:msg)
   endif
 endf
 "}}}
@@ -174,7 +167,6 @@ endf
 " }}}
 " {{{ s:Complete[Dot|Arrow|Colon]
 " Tigger a:cmd when cursor is after . -> and ::
-
 func! s:ShouldComplete()
   if getline('.') =~# '#\s*\(include\|import\)' || getline('.')[col('.') - 2] == "'"
     return 0
@@ -310,11 +302,11 @@ func! s:DiagnosticsWindowOpen(src, diags)
   let l:mode      = g:clang_diagsopt[0 : l:i-1]
   let l:maxheight = g:clang_diagsopt[l:i+1 : -1]
 
+  let l:cbuf = bufnr('%')
   " Here uses t:clang_diags_bufnr to keep only one window in a *tab*
   if !exists('t:clang_diags_bufnr') || !bufexists(t:clang_diags_bufnr)
-    let t:clang_diags_bufnr = bufnr('ClangDiagnostics@' . last_buffer_nr(), 1)
+    let t:clang_diags_bufnr = bufnr('ClangDiagnostics@' . l:cbuf, 1)
   endif
-  let l:cbuf = bufnr('%')
 
   let l:winnr = bufwinnr(t:clang_diags_bufnr)
   if l:winnr == -1
@@ -328,7 +320,7 @@ func! s:DiagnosticsWindowOpen(src, diags)
     endif
   elseif empty(l:diags)
     " just close window(but not preview window) and return
-    call s:DiagnosticsWindowClose(0)
+    call s:DiagnosticsWindowClose()
     return -1
   else
     " goto the exist window
@@ -352,7 +344,10 @@ func! s:DiagnosticsWindowOpen(src, diags)
 
   " add diagnostics
   for l:line in l:diags
-    call append(line('$')-1, substitute(l:line, '^<stdin>:', a:src . ':', ''))
+    " 1. ^<stdin>:
+    " 2. ^In file inlcuded from <stdin>:
+    " So only to replace <stdin>: ?
+    call append(line('$')-1, substitute(l:line, '<stdin>:', a:src . ':', ''))
   endfor
   " the last empty line
   $delete _
@@ -392,29 +387,16 @@ endf
 "}}}
 ""{{{ s:DiagnosticsWindowClose
 " Close diagnostics window or quit the editor
-" @when_bufwinleave set to 1 if is called by BufWinLeave event
 " Tab variable
 "   t:clang_diags_bufnr
-"   t:clang_diags_driver_bufnr
-func! s:DiagnosticsWindowClose(when_bufwinleave)
+func! s:DiagnosticsWindowClose()
   " diag window buffer is not exist
   if !exists('t:clang_diags_bufnr')
     return
   endif
-
   call s:PDebug("s:DiagnosticsWindowClose", "try")
 
   let l:cbn = bufnr('%')
-  " is invalid file and not in diag window
-  if ! s:IsValidFile() && l:cbn != t:clang_diags_bufnr
-    return
-  endif
-
-  " is not leave from the driver buffer window
-  if a:when_bufwinleave && (!exists('t:clang_diags_driver_bufnr') || l:cbn != t:clang_diags_driver_bufnr)
-    return
-  end
-
   let l:cwn = bufwinnr(l:cbn)
   let l:dwn = bufwinnr(t:clang_diags_bufnr)
 
@@ -424,24 +406,32 @@ func! s:DiagnosticsWindowClose(when_bufwinleave)
   endif
 
   exe l:dwn . 'wincmd w'
-  if a:when_bufwinleave && winbufnr(3) == -1
-    " quit editor when called before leave the driver window
-    qall!
-  else
-    " just hide the diag window
-    hide
-  endif
+  quit
   exe l:cwn . 'wincmd w'
 
   call s:PDebug("s:DiagnosticsWindowClose", l:dwn)
 endf
 "}}}
 "{{{ s:DiagnosticsPreviewWindowClose
-" @when_bufwinleave set to 1 if is called by BufWinLeave event
-func! s:DiagnosticsPreviewWindowClose(when_bufwinleave)
+func! s:DiagnosticsPreviewWindowClose()
   call s:PDebug("s:DiagnosticsPreviewWindowClose", "")
   pclose
-  call s:DiagnosticsWindowClose(a:when_bufwinleave)
+  call s:DiagnosticsWindowClose()
+endf
+"}}}
+"{{{ s:DiagnosticsPreviewWindowCloseWhenLeave
+" Called when driver buffer is unavailable, close preivew and window when
+" leave from the driver buffer
+func! s:DiagnosticsPreviewWindowCloseWhenLeave()
+  if !exists('t:clang_diags_driver_bufnr')
+    return
+  endif
+
+  let l:cbuf = expand('<abuf>')
+  if l:cbuf != t:clang_diags_driver_bufnr
+    return
+  endif
+  call s:DiagnosticsPreviewWindowClose()
 endf
 "}}}
 "{{{  s:GenPCH
@@ -486,7 +476,7 @@ func! s:GenPCH(clang, header)
     " may want to discover pch
     call s:ClangCompleteInit(1)
     " close the error window
-    call s:DiagnosticsWindowClose(0)
+    call s:DiagnosticsWindowClose()
     call s:PLog("s:GenPCH", 'Clang creates PCH flie ' . l:header . '.pch successfully!')
   endif
   return l:clang_output
@@ -516,9 +506,7 @@ func! s:GlobalVarRestore(values)
 endf
 " }}}
 " {{{ s:HasPreviewAbove
-" 
 " Detect above view is preview window or not.
-"
 func! s:HasPreviewAbove()
   let l:cbuf = bufnr('%')
   let l:has = 0
@@ -783,18 +771,16 @@ func! s:ClangCompleteInit(force)
     endfor
   endif
 
+  " discover include directories *again* for neocomplete.
+  if !exists('g:neocomplete#sources#include#paths')
+    let g:neocomplete#sources#include#paths = {}
+  endif
+  let l:incs = s:DiscoverIncludeDirs(g:clang_exec, b:clang_options)
+  " FIXME: should not overwrite?
+  let g:neocomplete#sources#include#paths[&filetype] = join(l:incs, ',')
+
   " backup options without PCH support
   let b:clang_options_noPCH = b:clang_options
-
-  " Create GenPCH command
-  com! -nargs=* ClangGenPCHFromFile call <SID>GenPCH(g:clang_exec, <f-args>)
-  
-  " Create close diag and preview window command
-  com! ClangCloseWindow  call <SID>DiagnosticsPreviewWindowClose(0)
-
-  " Useful to re-initialize plugin if .clang is changed
-  com! ClangCompleteInit            call <SID>ClangCompleteInit(1)
-
   " try to find PCH files in clang_root and clang_root/include
   " Or add `-include-pch /path/to/x.h.pch` into the root file .clang manully
   if &filetype == 'cpp' && b:clang_options !~# '-include-pch'
@@ -806,6 +792,21 @@ func! s:ClangCompleteInit(force)
     endif
     exe 'lcd '.l:cwd
   endif
+
+  " Create GenPCH command
+  com! -nargs=* ClangGenPCHFromFile call <SID>GenPCH(g:clang_exec, <f-args>)
+  
+  " Create close diag and preview window command
+  com! ClangCloseWindow  call <SID>DiagnosticsPreviewWindowClose()
+
+  " Useful to re-initialize plugin if .clang is changed
+  com! ClangCompleteInit call <SID>ClangCompleteInit(1)
+
+  " Useful to check syntax only
+  com! ClangSyntaxCheck call <SID>ClangSyntaxCheck(b:clang_root, b:clang_options)
+
+  " Useful to format source code
+  com! ClangFormat call <SID>ClangFormat('%')
 
   if g:clang_auto   " Auto completion
     inoremap <expr> <buffer> . <SID>CompleteDot()
@@ -830,20 +831,45 @@ func! s:ClangCompleteInit(force)
           \ endif
   endif
 
-  "FIXME buggy when use :e, see #41
-  "au BufWinLeave <buffer> call <SID>DiagnosticsPreviewWindowClose(1)
+  au BufUnload <buffer> call <SID>DiagnosticsPreviewWindowCloseWhenLeave()
 
   au BufEnter <buffer> call <SID>BufVarSet()
   au BufLeave <buffer> call <SID>BufVarRestore()
+
+  " auto check syntax when write buffer
+  au BufWritePost <buffer> ClangSyntaxCheck
+
+  " auto format current file if is enabled
+  if g:clang_format_auto
+    au BufWritePost <buffer> ClangFormat
+  end
 
   call s:GlobalVarRestore(l:gvars)
 endf
 "}}}
 "{{{ ClangExecuteNeoJobHandler
-"handles event: exit
+"Handles stdout/stderr/exit events, and stores the stdout/stderr received from the shells.
 func! ClangExecuteNeoJobHandler(job_id, data, event)
-  if a:event == 'exit'
-    call ClangExecuteDone(self.fstdout, self.fstderr)
+  if index(['stdout', 'stderr'], a:event) >= 0
+    " when a:data[-1] is empty, which means is a complete line, otherwise need to concat a:data[-1]
+    if !empty(b:clang_state[a:event])
+      if empty(b:clang_state[a:event][-1])
+        " a complete line, just remove the last empty line
+        call remove(b:clang_state[a:event], -1)
+      else
+        " need to concat to the last line in previous chunk
+        let b:clang_state[a:event][-1] .= a:data[0]
+        call remove(a:data, 0)
+      endif
+    endif
+    let b:clang_state[a:event] += a:data
+  elseif a:event == 'exit'
+    for event in ['stdout', 'stderr']
+      if !empty(b:clang_state[event]) && empty(b:clang_state[event][-1])
+        call remove(b:clang_state[event], -1)
+      endif
+    endfor
+    call s:ClangExecuteDoneTriggerCompletion()
   endif
 endf
 "}}}
@@ -859,6 +885,9 @@ endf
 "       'stdout':  // updated in sync mode
 "       'stderr':  // updated in sync mode
 "     }
+"
+"     b:clang_execute_neojob_id  // used to stop previous job
+"
 " @root Clang root, project directory
 " @clang_options Options appended to clang binary image
 " @line Line to complete
@@ -868,15 +897,39 @@ func! s:ClangExecute(root, clang_options, line, col)
   let l:cwd = fnameescape(getcwd())
   exe 'lcd ' . a:root
   let l:src = join(getline(1, '$'), "\n") . "\n"
-  let l:command = printf('%s -fsyntax-only -Xclang -code-completion-macros -Xclang -code-completion-at=-:%d:%d %s -',
+  " shorter version, without redirecting stdout and stderr
+  let l:cmd = printf('%s -fsyntax-only -Xclang -code-completion-macros -Xclang -code-completion-at=-:%d:%d %s -',
                       \ g:clang_exec, a:line, a:col, a:clang_options)
   let l:tmps = [tempname(), tempname()]
-  let l:command .= ' 1>'.l:tmps[0].' 2>'.l:tmps[1]
+  " longer version, redirect output to different files
+  let l:command = l:cmd.' 1>'.l:tmps[0].' 2>'.l:tmps[1]
   let l:res = [[], []]
   if has("nvim")
-    let l:argv = ['sh', '-c', l:command]
-    call s:PDebug("s:ClangExecute::job.argv", l:argv, 2)
-    call jobstart(l:argv, {'fstdout': l:tmps[0], 'fstderr': l:tmps[1], 'on_exit': function('ClangExecuteNeoJobHandler')})
+    call s:PDebug("s:ClangExecute::cmd", l:cmd, 2)
+    " try to force stop last job which doesn't exit.
+    if exists('b:clang_execute_neojob_id')
+      try
+        call jobstop(b:clang_execute_neojob_id)
+      catch
+        " Ignore
+      endtry
+    endif
+
+    let l:argv = [g:clang_sh_exec, '-c', l:cmd]
+    " FuncRef must start with cap var
+    let l:Handler = function('ClangExecuteNeoJobHandler')
+    let l:opts = {'on_stdout': l:Handler, 'on_stderr': l:Handler, 'on_exit': l:Handler}
+    let l:jobid = jobstart(l:argv, l:opts)
+    let b:clang_execute_neojob_id = l:jobid
+
+    if l:jobid > 0
+      call s:PDebug("s:ClangExecute::jobid", l:jobid, 2)
+      call jobsend(l:jobid, l:src)
+      call jobclose(l:jobid, 'stdin')
+    else
+      call s:PError("s:ClangExecute", "Invalid jobid >> ".
+           \ (l:jobid < 0 ? "Invalid clang_sh_exec" : "Job table is full or invalid arguments"))
+    endif
   elseif !exists('v:servername') || empty(v:servername)
     let b:clang_state['state'] = 'ready'
     call s:PDebug("s:ClangExecute::cmd", l:command, 2)
@@ -901,32 +954,63 @@ func! s:ClangExecute(root, clang_options, line, col)
   return l:res
 endf
 "}}}
-" {{{ ClangExecuteDone
+"{{{ ClangExecuteDone
 " Called by vim-client when clang is returned in asynchronized mode.
 "
 " Buffer vars:
 "     b:clang_state => {
-"       'state' :  // updated to 'sync' in async mode
 "       'stdout':  // updated in async mode
 "       'stderr':  // updated in async mode
 "     }
 func! ClangExecuteDone(tmp1, tmp2)
   let l:res = s:DeleteAfterReadTmps([a:tmp1, a:tmp2])
-  let b:clang_state['state'] = 'sync'
   let b:clang_state['stdout'] = l:res[0]
   let b:clang_state['stderr'] = l:res[1]
-  call s:PDebug("ClangExecuteDone::stdout", l:res[0], 3)
-  call s:PDebug("ClangExecuteDone::stderr", l:res[1], 2)
+  call s:ClangExecuteDoneTriggerCompletion()
+endf
+"}}}
+"{{{ s:ClangExecuteDoneTriggerCompletion
+" Won't overwirte 'stdout' and 'stderr' in b:clang_state
+"
+" Buffer vars:
+"     b:clang_state => {
+"       'state' :  // updated to 'sync' in async mode
+"     }
+func! s:ClangExecuteDoneTriggerCompletion()
+  let b:clang_state['state'] = 'sync'
+  call s:PDebug("ClangExecuteDoneTriggerCompletion::stdout", b:clang_state['stdout'], 3)
+  call s:PDebug("ClangExecuteDoneTriggerCompletion::stderr", b:clang_state['stderr'], 2)
   call feedkeys("\<Esc>a")
   " As the default action of <C-x><C-o> causes a 'pattern not found'
   " when the result is empty, which break our input, that's really painful...
-  if ! empty(l:res[0])
+  if ! empty(b:clang_state['stdout'])
     call feedkeys("\<C-x>\<C-o>")
   else
     call ClangComplete(0, ClangComplete(1, 0))
   endif
 endf
+"}}}
+"{{{ s:ClangSyntaxCheck
+" Only do syntax check without completion, will open diags window when have
+" problem. Now this function will block...
+func! s:ClangSyntaxCheck(root, clang_options)
+  let l:cwd = fnameescape(getcwd())
+  exe 'lcd ' . a:root
+  let l:src = join(getline(1, '$'), "\n")
+  let l:command = printf('%s -fsyntax-only %s -', g:clang_exec, a:clang_options)
+  call s:PDebug("ClangSyntaxCheck::command", l:command)
+  let l:clang_output = system(l:command, l:src)
+  call s:DiagnosticsWindowOpen(expand('%:p:.'), split(l:clang_output, '\n'))
+  exe 'lcd ' . l:cwd
+endf
 " }}}
+" {{{ s:ClangFormat
+" Call clang-format to format source code
+func! s:ClangFormat(file)
+  let l:command = printf("%s -i -style=%s %s", g:clang_format_exec, g:clang_format_style, expand(a:file))
+  call system(l:command)
+endf
+"}}}
 "{{{ ClangComplete
 " More about @findstart and @base to check :h omnifunc
 " Async mode states:
@@ -1013,8 +1097,9 @@ func! s:ClangComplete(findstart, base)
     
     " update completions by new l:base
     let b:clang_cache['completions'] = s:ParseCompletionResult(b:clang_state['stdout'], l:base)
-    " close preview window if empty
-    if empty(b:clang_cache['completions'])
+    " close preview window if empty or has no preview window above, may above
+    " other windows...
+    if empty(b:clang_cache['completions']) || !s:HasPreviewAbove()
       pclose
     endif
     " call to show diagnostics
