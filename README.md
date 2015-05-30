@@ -76,38 +76,10 @@ find that's too 'slow' to wait the completion...
 * This mode is implemented by starting another vim process to notify the finish of the
    completion, so `+clientserver` option is required to compile the vim(generally added).
 
-* Please note that if you start vim from a terminal, and work as the non-GUI mode, such
-  as execute 'vim' to spawn the edit, default it does not act as a server. Instead, you
-  can start Gvim to work as a server or you must add '--servername XXX' to force to start
-  a vim server. More to see ':h clientserver'.
+* GVIM is required to use this mode, seems given `--servername ???` to `vim` is not working.
 
 * Job control is used to run clang when in neovim, which is really very nice! Thank you 
   [syswow][6].
-
-
-
-Include file path completion ?
---------------------
-Please use with [neocomplete][7], they can work well together.
-```viml
-" disable auto completion for vim-clang
-let g:clang_auto = 0
-" default 'longest' can not work with neocomplete
-let g:clang_c_completeopt = 'menuone,preview'
-let g:clang_cpp_completeopt = 'menuone,preview'
-
-" use neocomplete
-" input patterns
-if !exists('g:neocomplete#force_omni_input_patterns')
-  let g:neocomplete#force_omni_input_patterns = {}
-endif
-
-" for c and c++
-let g:neocomplete#force_omni_input_patterns.c =
-      \ '[^.[:digit:] *\t]\%(\.\|->\)\w*'
-let g:neocomplete#force_omni_input_patterns.cpp =
-      \ '[^.[:digit:] *\t]\%(\.\|->\)\w*\|\h\w*::\w*'
-```
 
 
 Options and Commands
@@ -116,8 +88,10 @@ Options and Commands
 
 OS requirement
 --------------------
-Now only tested on Linux (Ubuntu/Debian) and Mac OSX
-
+Tested on
+* Ubuntu 14.04
+* Mac OS X 10.10
+* Windows 7
 
 [1]: https://github.com/Rip-Rip/clang_complete
 [2]: http://www.ishani.org

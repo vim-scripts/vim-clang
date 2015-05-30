@@ -4,6 +4,8 @@ if exists('g:clang_loaded')
 endif
 let g:clang_loaded = 1
 
+let g:clang_has_win = has('win16') || has('win32') || has('win64') || has('win95')
+
 if !exists('g:clang_auto')
   let g:clang_auto = 1
 endif
@@ -69,9 +71,14 @@ if !exists('g:clang_pwheight')
 endif
 
 if !exists('g:clang_sh_exec')
-  " TODO: Need bash or sh on Microsoft Windows, cmd.exe is not supported.
-  let g:clang_sh_exec = 'sh'
+  if g:clang_has_win
+    let g:clang_sh_exec = 'C:\Windows\system32\cmd.exe'
+  else
+    " sh default is dash on Ubuntu, which is unsupported
+    let g:clang_sh_exec = 'bash'
+  endif
 endif
+let g:clang_sh_is_cmd = g:clang_sh_exec =~ 'cmd.exe'
 
 if !exists('g:clang_statusline')
   let g:clang_statusline='%s\ \|\ %%l/\%%L\ \|\ %%p%%%%'
@@ -100,7 +107,13 @@ au FileType c,cpp call <SID>ClangCompleteInit(0)
 " A new file is also a valid file
 func! s:IsValidFile()
   let l:cur = expand("%")
-  return ( &filetype == "c" || &filetype == "cpp" ) && ( filereadable(l:cur) || empty(glob(l:cur)) )
+  " don't load plugin when in fugitive buffer
+  if l:cur =~ 'fugitive:///'
+    return 0
+  endif
+  " Please don't use filereadable to test, as the new created file is also 
+  " unreadable before writting to disk.
+  return &filetype == "c" || &filetype == "cpp"
 endf
 "}}}
 "{{{ s:PDebug
@@ -162,7 +175,9 @@ endf
 " {{{ s:BufVarRestore
 " Restore global vim options
 func! s:BufVarRestore()
-  exe 'set completeopt='.b:clang_bufvars_storage['completeopt']
+  if exists('b:clang_bufvars_storage')
+    exe 'set completeopt='.b:clang_bufvars_storage['completeopt']
+  endif
 endf
 " }}}
 " {{{ s:Complete[Dot|Arrow|Colon]
@@ -244,7 +259,8 @@ endf
 " @options Additional options passed to clang, e.g. -stdlib=libc++
 " @return List of dirs: ['path1', 'path2', ...]
 func! s:DiscoverIncludeDirs(clang, options)
-  let l:command = printf('echo | %s -fsyntax-only -v %s - 2>&1', a:clang, a:options)
+  let l:echo = g:clang_sh_is_cmd ? 'type NUL' : 'echo'
+  let l:command = printf('%s | %s -fsyntax-only -v %s - 2>&1', l:echo, a:clang, a:options)
   call s:PDebug("s:DiscoverIncludeDirs::cmd", l:command, 2)
   let l:clang_output = split(system(l:command), "\n")
   call s:PDebug("s:DiscoverIncludeDirs::raw", l:clang_output, 3)
@@ -746,7 +762,7 @@ func! s:ClangCompleteInit(force)
   endif
   
   " add current dir to include path
-  let b:clang_options .= ' -I ' . expand("%:p:h")
+  let b:clang_options .= ' -I ' . shellescape(expand("%:p:h"))
 
   " add include directories if is enabled and not ow
   if g:clang_include_sysheaders && ! l:is_ow
@@ -914,8 +930,9 @@ func! s:ClangExecute(root, clang_options, line, col)
         " Ignore
       endtry
     endif
-
-    let l:argv = [g:clang_sh_exec, '-c', l:cmd]
+    
+    let l:optc = g:clang_sh_is_cmd ? '/c' : '-c'
+    let l:argv = [g:clang_sh_exec, l:optc, l:cmd]
     " FuncRef must start with cap var
     let l:Handler = function('ClangExecuteNeoJobHandler')
     let l:opts = {'on_stdout': l:Handler, 'on_stderr': l:Handler, 'on_exit': l:Handler}
@@ -941,12 +958,27 @@ func! s:ClangExecute(root, clang_options, line, col)
     " Please note that '--remote-expr' executes expressions in server, but
     " '--remote-send' only sends keys, which is same as type keys in server...
     " Here occurs a bug if uses '--remote-send', the 'col(".")' is not right.
-    let l:keys = printf('ClangExecuteDone("%s","%s")', l:tmps[0], l:tmps[1])
+    let l:keys = printf("ClangExecuteDone('%s','%s')", l:tmps[0], l:tmps[1])
     let l:vcmd = printf('%s -s --noplugin --servername %s --remote-expr %s',
-                      \ g:clang_vim_exec, shellescape(v:servername), shellescape(l:keys))
-    let l:command = '('.l:command.';'.l:vcmd.') &'
-    call s:PDebug("s:ClangExecute::cmd", l:command, 2)
-    call system(l:command, l:src)
+          \ g:clang_vim_exec, shellescape(v:servername), shellescape(l:keys))
+    if g:clang_sh_is_cmd
+      let l:input = tempname()
+      call writefile(split(l:src, "\n", 1), l:input)
+      let l:input = shellescape(l:input)
+      let l:acmd = printf('type %s | %s & del %s & %s', l:input, l:command, l:input, l:vcmd)
+      silent exe "!start /min cmd /c ".l:acmd
+      let l:acmd_output = ''
+    else
+      let l:acmd = printf('(%s;%s)&', l:command, l:vcmd)
+      let l:acmd_output = system(l:acmd, l:src)
+    endif
+    call s:PDebug("s:ClangExecute::cmd", l:acmd, 2)
+    if v:shell_error
+      if !empty(l:acmd_output)
+        call s:DiagnosticsWindowOpen('', split(l:acmd_output, '\n'))
+      endif
+      call s:PError('s:ClangExecute::acmd', 'execute async command failed')
+    endif
   endif
   exe 'lcd ' . l:cwd
   let b:clang_state['stdout'] = l:res[0]
@@ -980,10 +1012,9 @@ func! s:ClangExecuteDoneTriggerCompletion()
   let b:clang_state['state'] = 'sync'
   call s:PDebug("ClangExecuteDoneTriggerCompletion::stdout", b:clang_state['stdout'], 3)
   call s:PDebug("ClangExecuteDoneTriggerCompletion::stderr", b:clang_state['stderr'], 2)
-  call feedkeys("\<Esc>a")
   " As the default action of <C-x><C-o> causes a 'pattern not found'
   " when the result is empty, which break our input, that's really painful...
-  if ! empty(b:clang_state['stdout'])
+  if ! empty(b:clang_state['stdout']) && mode() == 'i'
     call feedkeys("\<C-x>\<C-o>")
   else
     call ClangComplete(0, ClangComplete(1, 0))
