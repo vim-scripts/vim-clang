@@ -10,6 +10,10 @@ if !exists('g:clang_auto')
   let g:clang_auto = 1
 endif
 
+if !exists('g:clang_compilation_database')
+  let g:clang_compilation_database = ''
+endif
+
 if !exists('g:clang_c_options')
   let g:clang_c_options = ''
 endif
@@ -30,7 +34,7 @@ if !exists('g:clang_debug')
   let g:clang_debug = 0
 endif
 
-if !exists('g:clang_diagsopt') || g:clang_diagsopt !~# '^[a-z]\+\(:[0-9]\)\?$'
+if !exists('g:clang_diagsopt') || (!empty(g:clang_diagsopt) && g:clang_diagsopt !~# '^[a-z]\+\(:[0-9]\)\?$')
   let g:clang_diagsopt = 'rightbelow:6'
 endif
 
@@ -44,6 +48,10 @@ endif
 
 if !exists('g:clang_exec')
   let g:clang_exec = 'clang'
+endif
+
+if !exists('g:clang_gcc_exec')
+  let g:clang_gcc_exec = 'gcc'
 endif
 
 if !exists('g:clang_format_auto')
@@ -60,6 +68,10 @@ end
 
 if !exists('g:clang_include_sysheaders')
   let g:clang_include_sysheaders = 1
+endif
+
+if !exists('g:clang_include_sysheaders_from_gcc')
+  let g:clang_include_sysheaders_from_gcc = 0
 endif
 
 if !exists('g:clang_load_if_clang_dotfile')
@@ -291,6 +303,20 @@ func! s:DiscoverIncludeDirs(clang, options)
   return l:res
 endf
 "}}}
+"{{{ s:DiscoverDefaultIncludeDirs
+" Discover default include directories of clang and gcc (if existed).
+" @options Additional options passed to clang and gcc, e.g. -stdlib=libc++
+" @return List of dirs: ['path1', 'path2', ...]
+func! s:DiscoverDefaultIncludeDirs(options)
+  if g:clang_include_sysheaders_from_gcc
+    let l:res = s:DiscoverIncludeDirs(g:clang_gcc_exec, a:options)
+  else
+    let l:res = s:DiscoverIncludeDirs(g:clang_exec, a:options)
+  endif
+  call s:PDebug("s:DiscoverDefaultIncludeDirs", l:res, 2)
+  return l:res
+endfunc
+"}}}
 "{{{ s:DiagnosticsWindowOpen
 " Split a window to show clang diagnostics. If there's no diagnostics, close
 " the split window.
@@ -305,6 +331,10 @@ endf
 " @diags A list of lines from clang diagnostics, or a diagnostics file name.
 " @return -1 or buffer number t:clang_diags_bufnr
 func! s:DiagnosticsWindowOpen(src, diags)
+  if g:clang_diagsopt ==# ''
+    return
+  endif
+
   let l:diags = a:diags
   if type(l:diags) == type('')
     " diagnostics file name
@@ -678,6 +708,49 @@ func! s:ShrinkPrevieWindow()
   exe bufwinnr(l:cbuf) . 'wincmd w'
 endf
 "}}}
+"{{{ s:ClangCompleteDatabase
+" Parse compile_commands.json
+func! s:ClangCompleteDatabase()
+  let l:clang_options = ''
+
+  if g:clang_compilation_database !=# ''
+    let l:ccd = fnameescape(fnamemodify(
+          \ g:clang_compilation_database . '/compile_commands.json', '%:p'))
+    let b:clang_root = fnameescape(fnamemodify(
+          \ g:clang_compilation_database, ':p:h'))
+
+    call s:PDebug("s:ClangCompleteInit::database", l:ccd)
+    if filereadable(l:ccd)
+python << endpython
+import vim
+import re
+import json
+
+current = vim.eval("expand('%:p')")
+ccd = vim.eval("l:ccd")
+opts = []
+
+with open(ccd) as database:
+  data = json.load(database)
+
+  for d in data:
+    # hax for headers
+    fmatch = re.search(r'(.*)\.(\w+)$', current)
+    dmatch = re.search(r'(.*)\.(\w+)$', d['file'])
+
+    if fmatch.group(1) == dmatch.group(1):
+      for result in re.finditer(r'-[ID]\s*[^\s]+', d['command']):
+        opts.append(result.group(0))
+      break
+
+vim.command("let l:clang_options = '" + ' '.join(opts) + "'")
+endpython
+    endif
+  endif
+
+  return l:clang_options
+endfunction
+"}}}
 "{{{ s:ClangCompleteInit
 " Initialization for every C/C++ source buffer:
 "   1. find set root to file .clang
@@ -725,7 +798,7 @@ func! s:ClangCompleteInit(force)
   let l:gvars = s:GlobalVarSet()
 
   " Firstly, add clang options for current buffer file
-  let b:clang_options = ''
+  let b:clang_options = s:ClangCompleteDatabase()
 
   let l:is_ow = 0
   if filereadable(l:dotclangow)
@@ -765,9 +838,9 @@ func! s:ClangCompleteInit(force)
   let b:clang_options .= ' -I ' . shellescape(expand("%:p:h"))
 
   " add include directories if is enabled and not ow
+  let l:default_incs = s:DiscoverDefaultIncludeDirs(b:clang_options)
   if g:clang_include_sysheaders && ! l:is_ow
-    let l:incs = s:DiscoverIncludeDirs(g:clang_exec, b:clang_options)
-    for l:dir in l:incs
+    for l:dir in l:default_incs
       let b:clang_options .= ' -I ' . shellescape(l:dir)
     endfor
   endif
@@ -786,14 +859,6 @@ func! s:ClangCompleteInit(force)
       endif
     endfor
   endif
-
-  " discover include directories *again* for neocomplete.
-  if !exists('g:neocomplete#sources#include#paths')
-    let g:neocomplete#sources#include#paths = {}
-  endif
-  let l:incs = s:DiscoverIncludeDirs(g:clang_exec, b:clang_options)
-  " FIXME: should not overwrite?
-  let g:neocomplete#sources#include#paths[&filetype] = join(l:incs, ',')
 
   " backup options without PCH support
   let b:clang_options_noPCH = b:clang_options
@@ -1015,7 +1080,7 @@ func! s:ClangExecuteDoneTriggerCompletion()
   " As the default action of <C-x><C-o> causes a 'pattern not found'
   " when the result is empty, which break our input, that's really painful...
   if ! empty(b:clang_state['stdout']) && mode() == 'i'
-    call feedkeys("\<C-x>\<C-o>")
+    call feedkeys("\<C-x>\<C-o>", "t")
   else
     call ClangComplete(0, ClangComplete(1, 0))
   endif
